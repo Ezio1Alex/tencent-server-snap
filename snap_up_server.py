@@ -298,5 +298,4 @@ if __name__ == "__main__":
             m, s = divmod(rem, 60)
             nxt_dt = datetime.fromtimestamp(next_seckill / 1000, tz=BJ_TZ)
             print(f"⏳ 距下一场秒杀（{nxt_dt:%Y-%m-%d %H:%M} 北京时间）还有 {h}小时{m}分{s}秒，当前服务器时间: {current_time}")
-            # 距开抢30秒内加密轮询（0.5秒/次）保证及时进入校准阶段；之前3秒一次避免高频空转
-            time.sleep(0.5 if remain_s <= 30 else 3)
+            time.sleep(3)  # 固定3秒轮询，直到进入15秒校准阶段
