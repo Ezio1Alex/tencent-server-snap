@@ -16,7 +16,7 @@ import json
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from concurrent.futures import ThreadPoolExecutor
+import threading
 
 # ======================= 活动配置（按自己活动页抓包填写） =======================
 ACTIVITY_ID = 162634773874417          # 活动ID
@@ -32,9 +32,10 @@ ACTIVITY_URL = "https://cloud.tencent.com/act/pro/featured-202607"  # 活动页�
 
 # ======================= 抢购配置 =======================
 SECKILL_HOURS = [10, 15]   # 每天抢购时刻（北京时间）
-RUSH_DURATION = 5          # 抢购爆发窗口（秒），窗口内高频下单
-RUSH_INTERVAL = 0.2        # 每轮下单间隔（秒），调小更激进但易被限流
+RUSH_DURATION = 3          # 抢购爆发窗口（秒），窗口内持续下单
+RUSH_CONCURRENCY = 7       # 独立请求通道数（每路一个线程），7路短窗口猛打前几秒
 RUSH_LEAD = 0.5            # 提前开火（秒），补偿秒级时间戳截断与网络延迟
+REQUEST_TIMEOUT = 2        # 单个请求等待响应上限（秒）：等不到就放弃换下一发，避免某路连接卡死
 
 # ======================= 地域对照（库存检查打印用） =======================
 REGION_MAP = {1: "广州", 4: "上海", 8: "北京"}
@@ -181,7 +182,7 @@ def buy_now(region_id):
             "https://act-api.cloud.tencent.com/dianshi/do-goods",
             json=do_data,
             headers=headers,
-            timeout=10,
+            timeout=REQUEST_TIMEOUT  # 等不到响应就放弃换下一发，防止某路连接卡死整路熄火
         )
         print(f"🎯 核心购买接口返回：{resp.text}")
         result = resp.json()
@@ -228,21 +229,34 @@ def calibrate_offset(samples=8):
 # ======================= 高频抢购 =======================
 
 
-def rush_buy(region_ids, duration, interval):
-    """秒杀开始后高频暴力抢购：duration秒窗口内反复并发下单，抢到即停"""
-    deadline = time.time() + duration
-    round_no = 0
-    with ThreadPoolExecutor(max_workers=len(region_ids)) as executor:
-        while time.time() < deadline:
-            round_no += 1
-            print(f"⚡ 第{round_no}轮抢购 ...")
-            futures = [executor.submit(buy_now, rid) for rid in region_ids]
-            for future in futures:
-                result = future.result()
-                if isinstance(result, dict) and result.get("code") == 0:
-                    print(f"🎉 抢购成功！地域ID: {result.get('region_id', '未知')}")
-                    return result
-            time.sleep(interval)
+def rush_buy(region_ids, duration, routes):
+    """开多路独立请求通道：每路一个线程，各自持续发下单请求，任何一路成功即整体停止。
+
+    各路完全独立——某路请求卡住/超时只影响自己，其他路照常打，互不拖累。
+    """
+    stop = threading.Event()
+    holder = {'result': None}
+
+    def worker(route_idx):
+        rid = region_ids[route_idx % len(region_ids)]
+        deadline = time.time() + duration
+        while time.time() < deadline and not stop.is_set():
+            result = buy_now(rid)
+            if isinstance(result, dict) and result.get("code") == 0:
+                holder['result'] = result
+                stop.set()
+                return
+
+    print(f"🔥 开火！开启{routes}路独立请求通道，窗口{duration}秒，抢到即停")
+    threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(routes)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if holder['result']:
+        r = holder['result']
+        print(f"🎉 抢购成功！地域ID: {r.get('region_id', '未知')}")
+        return r
     print(f"❌ 抢购窗口结束（{duration}秒），未抢到")
     return None
 
@@ -283,8 +297,12 @@ if __name__ == "__main__":
             while True:
                 synced = time.time() * 1000 + offset  # 毫秒级服务器时间（本地时钟+校准偏移）
                 if synced >= next_seckill - lead_ms:
-                    print("🎯 开火！进入高频抢购窗口...")
-                    result = rush_buy(REGION_IDS, RUSH_DURATION, RUSH_INTERVAL)
+                    nxt_dt = datetime.fromtimestamp(next_seckill / 1000, tz=BJ_TZ)
+                    fire_dt = datetime.fromtimestamp(synced / 1000, tz=BJ_TZ)
+                    diff_ms = synced - next_seckill
+                    print(f"🎯 开火！秒杀时刻 {nxt_dt:%Y-%m-%d %H:%M:%S}，实际开火 {fire_dt:%H:%M:%S.%f}（{diff_ms:+.0f}ms）")
+                    print("🔥 进入高频抢购窗口...")
+                    result = rush_buy(REGION_IDS, RUSH_DURATION, RUSH_CONCURRENCY)
                     if result:
                         print("🎉 抢购成功，脚本退出")
                         sys.exit(0)
