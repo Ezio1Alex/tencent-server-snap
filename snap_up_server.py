@@ -33,7 +33,7 @@ ACTIVITY_URL = "https://cloud.tencent.com/act/pro/featured-202607"  # 活动页�
 # ======================= 抢购配置 =======================
 SECKILL_HOURS = [10, 15]   # 每天抢购时刻（北京时间）
 RUSH_DURATION = 3          # 抢购爆发窗口（秒），窗口内持续下单
-RUSH_CONCURRENCY = 30      # 独立请求通道数（每路一个线程），30路齐发砸放货瞬间
+RUSH_CONCURRENCY = 49      # 独立请求通道数（每路一个线程），49路齐发砸放货瞬间
 RUSH_LEAD = 0.02           # 提前开火（秒）：几乎贴着放货瞬间发
 REQUEST_TIMEOUT = 30       # 单个请求等待响应上限（秒）：踩中时刻的请求可能被排队很久才回话，给足30秒等到结果
 
@@ -47,7 +47,7 @@ BJ_TZ = timezone(timedelta(hours=8))
 session = requests.Session()
 # 30路并发共享session，把连接池撑到30避免连接反复重建
 from requests.adapters import HTTPAdapter
-session.mount("https://", HTTPAdapter(pool_connections=30, pool_maxsize=30))
+session.mount("https://", HTTPAdapter(pool_connections=49, pool_maxsize=49))
 
 
 def load_cookies():
