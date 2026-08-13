@@ -180,6 +180,8 @@ def buy_now(region_id):
         ],
         "preview": 0,
     }
+    send_time = datetime.now(tz=BJ_TZ).strftime("%H:%M:%S.%f")[:-3]  # 请求发送时刻（北京时间，毫秒）
+    print(f"📤 [{send_time}] 发送下单请求 地域{region_id}")
     try:
         resp = session.post(
             "https://act-api.cloud.tencent.com/dianshi/do-goods",
@@ -187,13 +189,15 @@ def buy_now(region_id):
             headers=headers,
             timeout=REQUEST_TIMEOUT  # 等不到响应就放弃换下一发，防止某路连接卡死整路熄火
         )
-        print(f"🎯 核心购买接口返回：{resp.text}")
+        recv_time = datetime.now(tz=BJ_TZ).strftime("%H:%M:%S.%f")[:-3]  # 响应返回时刻
+        print(f"📥 [{send_time} → {recv_time}] 返回：{resp.text}")
         result = resp.json()
         if isinstance(result, dict):
             result["region_id"] = region_id  # 把地域ID附到结果上，方便定位哪个地域成功
         return result
     except Exception as e:
-        print(f"❌ 核心购买接口调用失败：{e}")
+        recv_time = datetime.now(tz=BJ_TZ).strftime("%H:%M:%S.%f")[:-3]
+        print(f"❌ [{send_time} → {recv_time}] 调用失败：{e}")
         return None
 
 # ======================= 服务器时间同步 =======================
