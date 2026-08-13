@@ -45,6 +45,9 @@ BJ_TZ = timezone(timedelta(hours=8))
 
 # ======================= 会话与凭证 =======================
 session = requests.Session()
+# 30路并发共享session，把连接池撑到30避免连接反复重建
+from requests.adapters import HTTPAdapter
+session.mount("https://", HTTPAdapter(pool_connections=30, pool_maxsize=30))
 
 
 def load_cookies():
