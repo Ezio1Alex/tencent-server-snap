@@ -35,7 +35,7 @@ SECKILL_HOURS = [10, 15]   # 每天抢购时刻（北京时间）
 RUSH_DURATION = 3          # 抢购爆发窗口（秒），窗口内持续下单
 RUSH_CONCURRENCY = 7       # 独立请求通道数（每路一个线程），7路短窗口猛打前几秒
 RUSH_LEAD = 0.5            # 提前开火（秒），补偿秒级时间戳截断与网络延迟
-REQUEST_TIMEOUT = 2        # 单个请求等待响应上限（秒）：等不到就放弃换下一发，避免某路连接卡死
+REQUEST_TIMEOUT = 6        # 单个请求等待响应上限（秒）：秒杀高峰响应会延迟数秒，给足时间让请求真正完成
 
 # ======================= 地域对照（库存检查打印用） =======================
 REGION_MAP = {1: "广州", 4: "上海", 8: "北京"}
@@ -218,13 +218,17 @@ def calibrate_offset(samples=8):
     误差可压到约±0.3秒。校准后「本地时间+偏移」即可跟踪服务器时间。
     """
     offsets = []
-    for _ in range(samples):
+    print("⏳ 校准中：采样服务器时间偏移（8次）...")
+    for i in range(samples):
         t0 = time.time() * 1000  # 本地发送时刻
         t = get_server_time()    # 服务器时间（Date头，秒级）
         if t is not None:
             offsets.append(t - t0)  # 用发送时刻对齐，抵消RTT和截断的影响
+            print(f"   样本{i+1}/{samples}：偏移 {t - t0:+.0f}ms")
         time.sleep(0.15)
-    return max(offsets) if offsets else None
+    best = max(offsets) if offsets else None
+    print(f"✅ 校准完成：偏移 {best:+.0f}ms" if best is not None else "⚠️ 校准失败")
+    return best
 
 # ======================= 高频抢购 =======================
 
