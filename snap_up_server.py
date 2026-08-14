@@ -33,7 +33,7 @@ ACTIVITY_URL = "https://cloud.tencent.com/act/pro/featured-202607"  # 活动页�
 # ======================= 抢购配置 =======================
 SECKILL_HOURS = [10, 15]   # 每天抢购时刻（北京时间）
 RUSH_DURATION = 3          # 抢购爆发窗口（秒），窗口内持续下单
-RUSH_CONCURRENCY = 14      # 独立请求通道数（每路一个线程），14路折中火力与限流
+RUSH_CONCURRENCY = 21      # 独立请求通道数（每路一个线程），21路折中火力与限流
 RUSH_LEAD = 0.01           # 提前开火（秒）：贴着放货瞬间发
 REQUEST_TIMEOUT = 30       # 单个请求等待响应上限（秒）：踩中时刻的请求可能被排队很久才回话，给足30秒等到结果
 
@@ -45,9 +45,9 @@ BJ_TZ = timezone(timedelta(hours=8))
 
 # ======================= 会话与凭证 =======================
 session = requests.Session()
-# 多路并发共享session，把连接池撑到20避免连接反复重建
+# 多路并发共享session，连接池撑到30（>21路并发），避免连接反复重建
 from requests.adapters import HTTPAdapter
-session.mount("https://", HTTPAdapter(pool_connections=20, pool_maxsize=20))
+session.mount("https://", HTTPAdapter(pool_connections=30, pool_maxsize=30))
 
 
 def load_cookies():
@@ -246,21 +246,32 @@ def calibrate_offset(samples=8):
 
 
 def prewarm_pool(routes):
-    """开抢前预热连接池：向act-api顺序建好连接（keep-alive复用），
+    """开抢前预热连接池：并发向act-api建好routes条连接（keep-alive复用），
     开火瞬间各路线程直接复用现成连接，请求才能真正同时发出。
+    注意必须并发预热：串行发会复用同一根连接，实际只建1条，等于白预热。
     """
     print(f"🔥 预热连接池（{routes}条连接）...")
     ok = 0
-    for _ in range(routes):
+    lock = threading.Lock()
+
+    def warm(_):
+        nonlocal ok
         try:
             session.head(
                 "https://act-api.cloud.tencent.com/dianshi/check-available",
                 headers=headers,
                 timeout=5,
             )
-            ok += 1
+            with lock:
+                ok += 1
         except Exception:
             pass
+
+    threads = [threading.Thread(target=warm, args=(i,), daemon=True) for i in range(routes)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     print(f"✅ 连接池预热完成：{ok}/{routes} 条连接就绪")
 
 
