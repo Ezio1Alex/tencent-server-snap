@@ -33,7 +33,7 @@ ACTIVITY_URL = "https://cloud.tencent.com/act/pro/featured-202607"  # 活动页�
 # ======================= 抢购配置 =======================
 SECKILL_HOURS = [10, 15]   # 每天抢购时刻（北京时间）
 RUSH_DURATION = 3          # 抢购爆发窗口（秒），窗口内持续下单
-RUSH_CONCURRENCY = 49      # 独立请求通道数（每路一个线程），49路齐发砸放货瞬间
+RUSH_CONCURRENCY = 7       # 独立请求通道数（每路一个线程），7路避开408限流墙
 RUSH_LEAD = 0.02           # 提前开火（秒）：几乎贴着放货瞬间发
 REQUEST_TIMEOUT = 30       # 单个请求等待响应上限（秒）：踩中时刻的请求可能被排队很久才回话，给足30秒等到结果
 
@@ -47,7 +47,7 @@ BJ_TZ = timezone(timedelta(hours=8))
 session = requests.Session()
 # 30路并发共享session，把连接池撑到30避免连接反复重建
 from requests.adapters import HTTPAdapter
-session.mount("https://", HTTPAdapter(pool_connections=49, pool_maxsize=49))
+session.mount("https://", HTTPAdapter(pool_connections=10, pool_maxsize=10))
 
 
 def load_cookies():
@@ -220,9 +220,9 @@ def get_server_time():
 def calibrate_offset(samples=8):
     """估算本地时钟与服务器时间的偏移（毫秒），用于秒杀时刻毫秒级卡点。
 
-    Date响应头按秒截断，直接用会低估真实偏移0~1秒。
-    改用发送时刻对齐（offset = 服务器Date - 本地发送时刻），多次采样取最大值，
-    误差可压到约±0.3秒。校准后「本地时间+偏移」即可跟踪服务器时间。
+    发送时刻对齐的采样会被慢响应污染（响应越慢，样本虚高越多）。
+    先丢弃最大的25%样本（大概率是慢响应污染的），再取剩余的最大值：
+    既贴近真实偏移，又不会被单个抖动样本带偏开火点。
     """
     offsets = []
     print("⏳ 校准中：采样服务器时间偏移（8次）...")
@@ -230,14 +230,38 @@ def calibrate_offset(samples=8):
         t0 = time.time() * 1000  # 本地发送时刻
         t = get_server_time()    # 服务器时间（Date头，秒级）
         if t is not None:
-            offsets.append(t - t0)  # 用发送时刻对齐，抵消RTT和截断的影响
+            offsets.append(t - t0)
             print(f"   样本{i+1}/{samples}：偏移 {t - t0:+.0f}ms")
         time.sleep(0.15)
-    best = max(offsets) if offsets else None
-    print(f"✅ 校准完成：偏移 {best:+.0f}ms" if best is not None else "⚠️ 校准失败")
+    if not offsets:
+        print("⚠️ 校准失败")
+        return None
+    offsets.sort()
+    drop = max(1, len(offsets) // 4)  # 丢弃最大的25%（慢响应污染样本）
+    best = offsets[-drop - 1] if len(offsets) > drop else offsets[0]
+    print(f"✅ 校准完成：偏移 {best:+.0f}ms")
     return best
 
 # ======================= 高频抢购 =======================
+
+
+def prewarm_pool(routes):
+    """开抢前预热连接池：向act-api顺序建好连接（keep-alive复用），
+    开火瞬间各路线程直接复用现成连接，请求才能真正同时发出。
+    """
+    print(f"🔥 预热连接池（{routes}条连接）...")
+    ok = 0
+    for _ in range(routes):
+        try:
+            session.head(
+                "https://act-api.cloud.tencent.com/dianshi/check-available",
+                headers=headers,
+                timeout=5,
+            )
+            ok += 1
+        except Exception:
+            pass
+    print(f"✅ 连接池预热完成：{ok}/{routes} 条连接就绪")
 
 
 def rush_buy(region_ids, duration, routes):
@@ -304,6 +328,7 @@ if __name__ == "__main__":
             if offset is None:
                 print("⚠️ 时间校准失败，改用秒级时间兜底")
                 offset = 0
+            prewarm_pool(RUSH_CONCURRENCY)  # 预热连接，开火瞬间请求真正同时发出
             lead_ms = int(RUSH_LEAD * 1000)
             while True:
                 synced = time.time() * 1000 + offset  # 毫秒级服务器时间（本地时钟+校准偏移）
