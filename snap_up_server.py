@@ -206,7 +206,7 @@ def buy_now(region_id):
 def get_server_time():
     """获取腾讯云服务器时间（响应头Date），返回北京时间毫秒时间戳；失败返回None"""
     try:
-        response = requests.head(ACTIVITY_URL, timeout=10)
+        response = session.head(ACTIVITY_URL, timeout=10)  # 复用连接池，RTT更小
         server_time = response.headers.get("Date")
         if server_time:
             # 显式按UTC解析，再转北京时间，与电脑本地时区无关
@@ -217,29 +217,33 @@ def get_server_time():
     return None
 
 
-def calibrate_offset(samples=8):
+def calibrate_offset(samples=12):
     """估算本地时钟与服务器时间的偏移（毫秒），用于秒杀时刻毫秒级卡点。
 
-    发送时刻对齐的采样会被慢响应污染（响应越慢，样本虚高越多）。
-    先丢弃最大的25%样本（大概率是慢响应污染的），再取剩余的最大值：
-    既贴近真实偏移，又不会被单个抖动样本带偏开火点。
+    原始偏移 = 服务器秒级Date - 本地发送时刻，误差有两个方向：
+      1. Date头秒级截断 → 样本系统性偏低 0~999ms
+      2. 网络耗时 → 样本虚高 RTT（Date是响应时刻生成的）
+    两者都已知：RTT 直接测得，做减法消掉虚高；剩余误差只有截断损失
+    （0~999ms 均匀分布），取全部样本的最大值即截断损失最小者，最贴近真实偏移。
+    旧算法丢弃最大25%再取次大，把最接近真实值的好样本丢了，开火系统性偏晚。
     """
-    offsets = []
-    print("⏳ 校准中：采样服务器时间偏移（8次）...")
+    nets = []
+    print("⏳ 校准中：采样服务器时间偏移（12次）...")
     for i in range(samples):
         t0 = time.time() * 1000  # 本地发送时刻
         t = get_server_time()    # 服务器时间（Date头，秒级）
         if t is not None:
-            offsets.append(t - t0)
-            print(f"   样本{i+1}/{samples}：偏移 {t - t0:+.0f}ms")
+            rtt = time.time() * 1000 - t0
+            off = t - t0
+            net = off - rtt  # ≈ 真实偏移 - 截断损失，消掉网络虚高
+            nets.append(net)
+            print(f"   样本{i+1}/{samples}：偏移 {off:+.0f}ms（RTT {rtt:.0f}ms → 净偏移 {net:+.0f}ms）")
         time.sleep(0.15)
-    if not offsets:
+    if not nets:
         print("⚠️ 校准失败")
         return None
-    offsets.sort()
-    drop = max(1, len(offsets) // 4)  # 丢弃最大的25%（慢响应污染样本）
-    best = offsets[-drop - 1] if len(offsets) > drop else offsets[0]
-    print(f"✅ 校准完成：偏移 {best:+.0f}ms")
+    best = max(nets)
+    print(f"✅ 校准完成：偏移 {best:+.0f}ms（取净偏移最大值，截断损失最小）")
     return best
 
 # ======================= 高频抢购 =======================
